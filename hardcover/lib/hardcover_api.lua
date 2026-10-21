@@ -25,6 +25,18 @@ local HardcoverApi = {
   enabled = true
 }
 
+-- Hardcover can answer a mutation with an "error" text instead of the object; turn that into
+-- the same error shape that HardcoverApi:query() uses
+local function mutationError(result, key, err)
+  if err then
+    return err
+  end
+  local payload = result and result[key]
+  if payload and payload.error then
+    return { errors = { { message = tostring(payload.error) } } }
+  end
+end
+
 local book_fragment = [[
 fragment BookParts on books {
   book_id: id
@@ -81,6 +93,9 @@ fragment UserBookParts on user_books {
     finished_at
     progress_pages
     edition_id
+    edition {
+      pages
+    }
   }
 }]]
 
@@ -213,7 +228,7 @@ end
 
 function HardcoverApi:hydrateBookFromEdition(edition_id, user_id)
   local editionSearch = [[
-    query ($id Int!, $userId: Int!) {
+    query ($id: Int!, $userId: Int!) {
       editions(where: { id: { _eq: $id }}) {
         ...EditionParts
       }
@@ -392,6 +407,25 @@ function HardcoverApi:normalizeUserBookRead(user_book_read)
   return user_book
 end
 
+-- Progress is counted in pages of one particular edition. Hardcover shows a read's percentage
+-- against the edition that read belongs to, which is not always the edition the book was linked
+-- with here. This converts a page number counted in the linked edition (`base_pages` long) to
+-- the same place in the read's own edition. Never reaches the last page unless the input did.
+function HardcoverApi:scalePagesToRead(read, pages, base_pages)
+  local read_pages = read and read.edition and tonumber(read.edition.pages)
+  base_pages = tonumber(base_pages)
+  if not (pages and read_pages and read_pages > 0 and base_pages and base_pages > 0) or read_pages == base_pages then
+    return pages
+  end
+
+  local scaled = math.floor(pages / base_pages * read_pages + 0.5)
+  scaled = math.max(0, math.min(read_pages, scaled))
+  if pages < base_pages and scaled >= read_pages and read_pages > 1 then
+    scaled = read_pages - 1
+  end
+  return scaled
+end
+
 function HardcoverApi:findBooks(title, author, userId)
   if not title or string.match(title, "^%s*$") then
     return {}
@@ -541,6 +575,9 @@ function HardcoverApi:createRead(user_book_id, edition_id, page, started_at)
           finished_at
           edition_id
           progress_pages
+          edition {
+            pages
+          }
           user_book {
             id
             book_id
@@ -554,11 +591,11 @@ function HardcoverApi:createRead(user_book_id, edition_id, page, started_at)
     }
   ]]
 
-  local result = self:query(query, { id = user_book_id, pages = page, editionId = edition_id, startedAt = started_at })
-  if result and result.update_user_book_read then
-    local user_book_read = result.insert_user_book_read.user_book_read
-    return self:normalizeUserBookRead(user_book_read)
+  local result, err = self:query(query, { id = user_book_id, pages = page, editionId = edition_id, startedAt = started_at })
+  if result and result.insert_user_book_read and result.insert_user_book_read.user_book_read then
+    return self:normalizeUserBookRead(result.insert_user_book_read.user_book_read)
   end
+  return nil, mutationError(result, "insert_user_book_read", err)
 end
 
 function HardcoverApi:updatePage(user_read_id, edition_id, page, started_at)
@@ -576,6 +613,9 @@ function HardcoverApi:updatePage(user_read_id, edition_id, page, started_at)
           finished_at
           edition_id
           progress_pages
+          edition {
+            pages
+          }
           user_book {
             id
             book_id
@@ -589,10 +629,56 @@ function HardcoverApi:updatePage(user_read_id, edition_id, page, started_at)
     }
   ]]
 
-  local result = self:query(query, { id = user_read_id, pages = page, editionId = edition_id, startedAt = started_at })
-  if result and result.update_user_book_read then
+  local result, err = self:query(query, { id = user_read_id, pages = page, editionId = edition_id, startedAt = started_at })
+  if result and result.update_user_book_read and result.update_user_book_read.user_book_read then
     return self:normalizeUserBookRead(result.update_user_book_read.user_book_read)
   end
+  return nil, mutationError(result, "update_user_book_read", err)
+end
+
+function HardcoverApi:finishRead(user_read_id, edition_id, page, started_at, finished_at)
+  local query = [[
+    mutation FinishBookRead($id: Int!, $pages: Int, $editionId: Int, $startedAt: date, $finishedAt: date) {
+      update_user_book_read(id: $id, object: {
+        progress_pages: $pages,
+        edition_id: $editionId,
+        started_at: $startedAt,
+        finished_at: $finishedAt,
+      }) {
+        error
+        user_book_read {
+          id
+          started_at
+          finished_at
+          edition_id
+          progress_pages
+          edition {
+            pages
+          }
+          user_book {
+            id
+            book_id
+            status_id
+            edition_id
+            privacy_setting_id
+            rating
+          }
+        }
+      }
+    }
+  ]]
+
+  local result, err = self:query(query, {
+    id = user_read_id,
+    pages = page,
+    editionId = edition_id,
+    startedAt = started_at,
+    finishedAt = finished_at
+  })
+  if result and result.update_user_book_read and result.update_user_book_read.user_book_read then
+    return self:normalizeUserBookRead(result.update_user_book_read.user_book_read)
+  end
+  return nil, mutationError(result, "update_user_book_read", err)
 end
 
 function HardcoverApi:updateUserBook(book_id, status_id, privacy_setting_id, edition_id)
@@ -619,10 +705,11 @@ function HardcoverApi:updateUserBook(book_id, status_id, privacy_setting_id, edi
     edition_id = edition_id
   }
 
-  local result = self:query(query, { object = update_args })
-  if result and result.insert_user_book then
+  local result, err = self:query(query, { object = update_args })
+  if result and result.insert_user_book and result.insert_user_book.user_book then
     return result.insert_user_book.user_book
   end
+  return nil, mutationError(result, "insert_user_book", err)
 end
 
 function HardcoverApi:updateRating(user_book_id, rating)
@@ -641,10 +728,11 @@ function HardcoverApi:updateRating(user_book_id, rating)
     rating = json.util.null
   end
 
-  local result = self:query(query, { id = user_book_id, rating = rating })
-  if result and result.update_user_book then
+  local result, err = self:query(query, { id = user_book_id, rating = rating })
+  if result and result.update_user_book and result.update_user_book.user_book then
     return result.update_user_book.user_book
   end
+  return nil, mutationError(result, "update_user_book", err)
 end
 
 function HardcoverApi:removeRead(user_book_id)

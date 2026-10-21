@@ -1,21 +1,27 @@
 # Hardcover.app for KOReader
 
-A KOReader plugin to update your [Hardcover.app](https://hardcover.app) reading status
+A KOReader plugin to update your [Hardcover.app](https://hardcover.app) reading status, progress and ratings.
+
+This is a fork of [Billiam's hardcoverapp.koplugin](https://github.com/Billiam/hardcoverapp.koplugin). On top of the
+original it adds an offline queue, "Currently Reading" and "Read" prompts, an optional star rating prompt, and
+per-book "Always sync" / "Never sync" rules.
 
 ## Installation
 
-1. Download and extract the latest release: https://github.com/Billiam/hardcoverapp.koplugin/releases/latest
+1. Download and extract the plugin.
 2. Rename `hardcover_config.example.lua` to `hardcover_config.lua`
 3. Fetch your API key from https://hardcover.app/account/api (just the part after `Bearer `)
 4. Add your API key to the `token` field in `hardcover_config.lua`, between the `''` quotes. For example:
    `token = 'abcde...fghij'`
-5. Install plugin by copying the `hardcoverapp.koplugin` folder to the KOReader plugins folder on your device
+5. Install the plugin by copying the `hardcoverapp.koplugin` folder to the KOReader plugins folder on your device
 
 ## Usage
 
 The Hardcover plugin's menu can be found in the Bookmark top menu when a document is active.
 
-![Hardcover plugin main menu with the following menu items: the currently linked book (Frankenstein), an option to change the edition specific edition, a checkbox to Automatically track progress, Update status (which opens a submenu), Settings (which opens a submenu), and About](https://github.com/user-attachments/assets/0fd8f6fb-3a61-471f-9450-9a0b3dadc9d1)
+Main menu items, in order: the linked book (and its edition), `Always sync this book`, `Never sync this book`,
+`Update status`, the offline queue items (see [Offline queue](#offline-queue)), `Suggest a book`, `Settings` and
+`About`.
 
 ### Linking a book
 
@@ -32,14 +38,16 @@ begin a manual search.
 
 ![An input dialog titled "New Search" with the text "Frankenstein Mary Shelley". Behind the dialog, a recent book search result dialog appears with two books](https://github.com/user-attachments/assets/73619448-9821-410a-901f-d8fc61185dd3)
 
-Selecting a Hardcover book or edition will link it to your current document, but will not automatically update your
-reading status on Hardcover. This can be done manually from the [update status](#updating-reading-status) menu, or using
-the [track progress](#automatically-track-progress) option.
+Selecting a Hardcover book or edition will link it to your current document, but will not by itself update your
+reading status on Hardcover. That is done manually from the [update status](#updating-reading-status) menu, or
+automatically (see [Automatic updates](#automatic-updates)).
 
-To clear the currently linked book, tap and hold to the `Linked book` menu item for a moment.
+Linking only stores the link on your device. It never changes anything on Hardcover.
+
+To clear the currently linked book, tap and hold the `Linked book` menu item for a moment.
 
 After selecting a book, you can set a specific edition using the `Change edition` menu item. This will present a list
-of available editions for the currently linked book. No manual edition search is available
+of available editions for the currently linked book. No manual edition search is available.
 
 ### Updating reading status
 
@@ -49,9 +57,12 @@ To change your book status (Want To Read, Currently Reading, Read, Did Not Finis
 `Update status` menu after [linking your book](#linking-a-book). You can also remove the book from your Hardcover
 library using the `Remove` menu item.
 
-From this menu you can also update your current page and book rating, and add a new journal entry
+From this menu you can also update your current page and book rating, and add a new journal entry.
 
 Tap and hold the book rating menu item to clear your current rating.
+
+Actions in this menu are always manual and are not affected by the automatic settings or the per-book rules below. They
+need a connection to Hardcover (KOReader will offer to turn wifi on).
 
 ### Add a journal entry quote
 
@@ -62,39 +73,120 @@ Selecting text to quote:
 ![A form window titled "Create journal entry". The previously selected text appears in an input field at the top. Below that is a toggle for whether the journal entry should be a note or a quote. A button to change the journal edition follows, and one to change the current page. Below those, a toggle to change the journal entry privay with the options Public, Follows and Private. Lastly are two input fields to set journal entry tags and spoiler tags respectively, and then buttons to save the entry or close the window](https://github.com/user-attachments/assets/c386f153-330f-4e1f-afa1-12fdf48a1216)
 
 After selecting document text in a linked document, choose `Hardcover quote` from the highlight menu to display the
-journal entry form, prefilled with the selected text and page.
+journal entry form, prefilled with the selected text and page. Journal entries are sent straight away and need a
+connection; they are not kept in the offline queue.
 
-### Automatically track progress
+## Automatic updates
 
-Automatic progress tracking is optional: book status and reading progress can instead be
-[updated manually](#update-reading-status) from the `Update status` menu.
+Everything in this section is optional. Four kinds of update can happen automatically, each with its own setting under
+`Settings`:
 
-When track progress is enabled for a book which has been linked ([manually](#linking-a-book)
-or [automatically](#automatic-linking)),
-page and status updates will automatically be sent to Hardcover for some reading events:
+| Update | Setting | Choices |
+|---|---|---|
+| Reading progress | `Reading progress updates by default` | on / off |
+| Book marked Currently Reading | `'Currently Reading' updates by default` | Off / Ask first / Automatic |
+| Book marked Read | `'Read' status updates by default` | Off / Ask first / Automatic |
+| Star rating when marked Read | `Rating prompt when marked 'Read' by default` | on / off |
 
-* Your current read will be updated when paging through the document, no more than once per minute. This frequency
-  [can be configured](#track-progress-frequency).
-* When marking a book as finished from the file browser, the book will be marked as finished in Hardcover
-* When reaching the end of the document, if the KOReader settings automatically mark the document as finished, the
-  book will be marked as finished in Hardcover. If the KOReader setting instead opens a popup, the book status will be
-  checked
-  ten seconds later, and if the book has been marked finished, it will be marked as finish in Hardcover.
+Any of these can be overridden for a single book, see [Per-book rules](#per-book-rules). A book must be linked
+(manually or [automatically](#automatic-linking)) for anything to be sent. Books that are not linked yet are
+handled through the [offline queue](#offline-queue).
+
+The Currently Reading and Read settings only apply to books that are tracked by default (`Always track progress by
+default`), or that have been given their own rule with `Always sync this book`.
+
+### Progress
+
+While reading, your current read on Hardcover is updated at the interval chosen under `Progress updates after`:
+
+* **Update periodically**: at the number of minutes you choose (at most once a minute).
+* **Update by progress**: whenever you cross a percentage step (for example every 10%).
 
 For all documents, but in particular for reflowable documents (like epubs), the current page in your reader may not
-match that of the original published book.
+match that of the original published book. Documents that contain page information are mapped to the published page;
+for other documents your position is stored as a percentage of the book and converted to a page of the edition
+Hardcover is tracking (`round(percentage * edition_pages)`), so the percentage shown on Hardcover matches the one in
+KOReader even when the linked edition has a different number of pages.
 
-Some documents contain information allowing the current page to map to the published book's pages. For these documents,
-the mapped page will be sent to Hardcover if possible.
+Progress is never moved backwards: if Hardcover already shows a later page than an update that was waiting, the older
+value is dropped and a short notice is shown.
 
-For documents without these, your progress will be converted to a percentage of the number of pages in the original
-published book, with a calculation like:
-`round((document_page_number / document_total_pages) * hardcover_edition_total_pages)`.
+### Mark as Currently Reading
 
-In both cases, this may not exactly match the page of the published document, and can even be far off if there
-are large differences in the total pages.
+When you have read far enough (5% of the book by default, or a number of minutes of reading; change it under
+`Settings` > `Currently Reading after`), the plugin
+marks the book Currently Reading and dates the start of the read: `Ask first` shows a Yes/No question, `Automatic`
+does it straight away. Minutes count only time spent turning pages (a pause of over five minutes counts as five). A book that is already past the threshold when you first open it is offered once.
 
-### Suggest a book
+The question also has a `Never for this book` button, which asks for confirmation and then switches all updates off for
+that book (see [Per-book rules](#per-book-rules)).
+
+Switching Currently Reading from Off to Ask first or Automatic (globally, or for a book) offers it again to the book
+you are reading, whatever percentage it has reached.
+
+### Mark as Read at end of book
+
+When you reach the end of the document, `Ask first` asks "Mark this book as Read on Hardcover?" and `Automatic` does it
+without asking. Either way the book is also marked finished in KOReader, and KOReader's own end of book action
+(pop-up, next file, ...) carries on afterwards.
+
+While this is switched on, the last page is never sent as progress (Hardcover would otherwise mark the book Read by
+itself). Nothing is sent to Hardcover when you mark a book finished in KOReader by any other route.
+
+### Star rating
+
+With `Rating prompt when marked 'Read' by default` on (whether `'Read' status updates by default` is `Ask first` or `Automatic`), a rating dialog opens once the book is marked Read (after answering Yes, or straight away when automatic): 0 to 5 stars in half-star steps (starting at 2.5; pressing past either end wraps round), `Skip` to leave the book unrated. A
+book can override this with `Always sync this book` > `Rating` or `Never sync this book` > `Rating`.
+
+## Per-book rules
+
+Each book can follow the global settings, or have its own rules:
+
+* **Always sync this book**: switches things on for this book even when they are off globally.
+  * `Progress`: track progress.
+  * `Currently Reading` and `Read`: choose `Automatic` or `Ask first` (or `Follow global setting`).
+  * `Rating`: ask for a star rating after the book is marked Read.
+  * `Enable all` ticks everything.
+* **Never sync this book**: switches things off for this book even when they are on globally.
+  * The same four items. Ticking one asks for confirmation if updates of that kind are waiting in the offline
+    queue, and throws those away.
+  * `Enable all` asks "Are you sure you want to disable all updates to Hardcover for this book?" and clears all of its
+    waiting updates. Untick it again to return to the global settings.
+
+A setting for a book that is neither Always nor Never follows the global setting. Linking is not affected by these
+rules.
+
+Using KOReader's `Reset book data` (document settings, progress, bookmarks, highlights and notes) on a book also clears
+its Always/Never rules, so it follows the global settings again and may be offered Currently Reading afresh. The link to
+the Hardcover book is kept.
+
+## Offline queue
+
+When Hardcover cannot be reached (wifi off, no internet), the plugin keeps what happens in a small file on your device
+and sends it later, without you reopening the books:
+
+* that a book was started, how far you got (as a percentage), and that you finished it, with the correct dates
+* the star rating given when finishing
+* books that are not linked yet: their title, author and identifiers are kept, and when a connection is available the
+  plugin links them using the enabled [automatic linking](#automatic-linking) options before sending. If it cannot, the
+  update stays in the queue and the Sync Log says why; linking the book by hand from the Hardcover menu sends it within
+  about a minute.
+
+The queue is sent in the background whenever a connection appears, about one request a second, with a short
+"Synced to Hardcover" notice at the end. Failed attempts caused by the network are retried automatically; if Hardcover
+refuses an update, you are asked after a number of tries (default 3, `Tries before asking` in the menu, 0 = never ask)
+whether to keep it or remove it.
+
+Menu items:
+
+* `Sync N queued updates now`: send now (KOReader offers to turn wifi on if needed)
+* `Pending updates`: every waiting update, what it contains and why it has not been sent; tap one to remove it
+* `Clear queued updates`: remove everything
+* `Sync Log`: what was sent or refused in the last 7 days, newest first
+
+The plugin never switches wifi on by itself. When automatic linking finds no match for a book, a short notice says manual linking is needed.
+
+## Suggest a book
 
 The suggest a book menu item will display up to 10 books from your Want To Read list in random order. Selecting one of
 the books in the dialog will start a file search for that book on your device, based on the title. The plugin does not
@@ -107,8 +199,6 @@ refresh button in the upper left corner to get a new list of 10 books.
 
 ## Settings
 
-![A settings menu containing the following options: Checkboxes for Automatically link by ISBN, Automatically link by Hardcover identifiers and Automatically link by title and author. Below that is an item to change the Track progress frequency showing the current setting (1 minute), and a checkbox to Always track progress by default.](https://github.com/user-attachments/assets/dc8a397b-f36d-49da-b880-d04d47219ed0)
-
 ### Automatic linking
 
 With automatic linking enabled, the plugin will attempt to find the matching book and/or edition on Hardcover
@@ -116,46 +206,43 @@ when a new document is opened, if no book has been linked already. These options
 
 * **Automatically link by ISBN**: If the document contains ISBN or ISBN13 metadata, try to find a matching edition for
   that ISBN
-* **Automatically link by Hardcover**: If the document metadata contains a `hardcover` identifier (with a URL slug for
-  the book)
-  or a `hardcover-edition` with an edition ID, try to find the matching book or edition.
+* **Automatically link by Hardcover identifiers**: If the document metadata contains a `hardcover` identifier (with a
+  URL slug for the book) or a `hardcover-edition` with an edition ID, try to find the matching book or edition.
   (see: [RobBrazier/calibre-plugins](https://github.com/RobBrazier/calibre-plugins/tree/main/plugins/hardcover))
-* **Automatically link by title**: If the document metadata contains a title, choose the first book returned from
-  hardcover search results for that title and document author (if available).
+* **Automatically link by title and author**: If the document metadata contains a title, choose the first book
+  returned from Hardcover search results for that title and document author (if available).
 
-### Track progress settings
+### Currently Reading after
 
-By default, (when enabled) updates will be sent to hardcover at a frequency you can select, no more often than once per
+Choose a percentage of the book (default 5%) or minutes of reading (default 10). See [Mark as Currently Reading](#mark-as-currently-reading).
+
+### Progress updates after
+
+By default, (when enabled) updates will be sent to Hardcover at a frequency you can select, no more often than once per
 minute. If you don't need updates this frequently, and to preserve battery, you can decrease this frequency further.
 
-You can also choose to update based on your percentage progress through a book. With this option, an update will be sent
-when you cross a percentage threshold (for example, every 10% completed).
+You can also choose to update based on your percentage progress through a book. With this option, an update will be
+sent when you cross a percentage threshold (for example, every 10% completed).
 
-### Always track progress by default
+### Reading progress updates by default
 
-When always track progress is enabled, new documents will have the [track progress](#automatically-track-progress)
-option enabled automatically. You can still turn off `Track progress` on a per-document basis when this setting is
-enabled.
+When this is enabled, new documents track progress automatically (see [Automatic updates](#automatic-updates)).
+You can still turn progress off for a single book with `Never sync this book`.
 
 Books still must be linked (manually or automatically) to send updates to Hardcover.
 
-### Enable wifi on demand
+### Mark as Currently Reading, Mark as Read at end of book, Star rating
 
-On some devices, wifi can be enabled on demand without interruption. When this feature is enabled, wifi will be enabled
-automatically before some types of background API requests (namely updating the initial application cache, and updating
-your reading progress), and then disabled afterward.
-
-This can improve battery life significantly on some devices, particularly with infrequent page updates.
-
-This feature is not used for all network requests. If wifi has not been manually enabled the following will not work:
-
-* fetching or updating your reading status manually
-* manually updating your reading progress from the menu
+See [Automatic updates](#automatic-updates).
 
 ### Confirm changes to book read status
 
 By default, changes to a book's read status (Want to Read, Did Not Finish, etc) will immediately update in Hardcover as
 soon as you press them. Enable this setting to display a confirmation prompt before those changes are sent.
+
+### Suppress all pop-up notifications
+
+Hides the brief automatic messages (including "Linked to…", Marked as Currently Reading, Marked as Read, Synced to Hardcover, Saved for later, and so on). Error messages and the answers to things you tap in the menu still appear. Off by default.
 
 ### Compatibility mode
 

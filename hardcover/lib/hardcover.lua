@@ -3,6 +3,7 @@ local _ = require("gettext")
 local logger = require("logger")
 local util = require("util")
 
+local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 
 local Notification = require("ui/widget/notification")
@@ -181,9 +182,11 @@ function Hardcover:autolinkBook(book)
 
   local linked = self:linkBook(book)
   if linked then
-    UIManager:show(Notification:new {
-      text = _("Linked to: " .. book.title),
-    })
+    if not self.settings:suppressNotifications() then
+      UIManager:show(Notification:new {
+        text = _("Linked to: " .. book.title),
+      })
+    end
   end
 end
 
@@ -218,7 +221,11 @@ end
 function Hardcover:linkBookByTitle()
   local props = self.ui.document:getProps()
 
-  local results = Api:findBooks(props.title, props.authors, User:getId())
+  local results, search_err = Api:findBooks(props.title, props.authors, User:getId())
+  if not results then
+    self.autolink_transient = true
+  end
+
   if results and #results > 0 then
     self:autolinkBook(results[1])
     return true
@@ -230,15 +237,33 @@ function Hardcover:tryAutolink()
     return
   end
 
+  -- autolinking reads the open book's metadata, so it cannot run from the file browser
+  if not self.ui.document then
+    return
+  end
+
   local props = self.ui.document:getProps()
 
-  local identifiers = Book:parseIdentifiers(props.identifiers)
+  local parsed_ok, identifiers = pcall(Book.parseIdentifiers, Book, props.identifiers)
+  if not parsed_ok then
+    logger.warn("HARDCOVER autolink: could not read identifiers: " .. tostring(identifiers))
+    identifiers = {}
+  end
+
   if ((identifiers.isbn_10 or identifiers.isbn_13) and self.settings:readSetting(SETTING.LINK_BY_ISBN))
     or ((identifiers.book_slug or identifiers.edition_id) and self.settings:readSetting(SETTING.LINK_BY_HARDCOVER))
     or (props.title and self.settings:readSetting(SETTING.LINK_BY_TITLE)) then
+    -- a temporary failure (no connection yet, search interrupted) is reported so it is tried again
+    self.autolink_transient = true
     self.wifi:withWifi(function()
+      if not NetworkMgr:isConnected() then
+        -- wifi is on but not connected yet
+        return
+      end
+      self.autolink_transient = false
       self:_runAutolink(identifiers)
     end)
+    return self.autolink_transient
   end
 end
 
@@ -253,7 +278,7 @@ function Hardcover:_runAutolink(identifiers)
   end
 
   if not linked and self.settings:readSetting(SETTING.LINK_BY_TITLE) then
-    self:linkBookByTitle()
+    linked = self:linkBookByTitle()
   end
 end
 

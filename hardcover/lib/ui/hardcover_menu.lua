@@ -1,5 +1,4 @@
 local DataStorage = require("datastorage")
-local Device = require("device")
 local _ = require("gettext")
 local math = require("math")
 local os = require("os")
@@ -12,6 +11,7 @@ local UIManager = require("ui/uimanager")
 
 local UpdateDoubleSpinWidget = require("hardcover/lib/ui/update_double_spin_widget")
 local InfoMessage = require("ui/widget/infomessage")
+local TextViewer = require("ui/widget/textviewer")
 local SpinWidget = require("ui/widget/spinwidget")
 
 local Api = require("hardcover/lib/hardcover_api")
@@ -133,16 +133,21 @@ function HardcoverMenu:getSubMenuItems(book_view)
       separator = true
     },
     book_view and {
-      text = _("Automatically track progress"),
-      checked_func = function()
-        return self.settings:syncEnabled()
+      text = _("Always sync this book"),
+      mandatory_func = function()
+        return self:ruleSummary("always")
       end,
-      enabled_func = function()
-        return self.settings:bookLinked()
+      sub_item_table_func = function()
+        return self:getAlwaysSyncItems()
       end,
-      callback = function()
-        local sync = not self.settings:syncEnabled()
-        self.settings:setSync(sync)
+    },
+    book_view and {
+      text = _("Never sync this book"),
+      mandatory_func = function()
+        return self:ruleSummary("never")
+      end,
+      sub_item_table_func = function()
+        return self:getNeverSyncItems()
       end,
     },
     book_view and {
@@ -155,6 +160,98 @@ function HardcoverMenu:getSubMenuItems(book_view)
 
         return self:getStatusSubMenuItems()
       end,
+      separator = true
+    },
+    {
+      text_func = function()
+        local waiting = self.queue and self.queue:count() or 0
+        if waiting == 0 then
+          return _("Offline queue: nothing waiting")
+        end
+        return T(_("Sync %1 queued update(s) now"), waiting)
+      end,
+      enabled_func = function()
+        return self.queue ~= nil and self.queue:count() > 0
+      end,
+      callback = function()
+        self.sync_queue()
+      end,
+      keep_menu_open = true
+    },
+    {
+      text_func = function()
+        local waiting = self.queue and self.queue:count() or 0
+        if waiting == 0 then
+          return _("Pending updates: none")
+        end
+        return T(_("Pending updates (%1)"), waiting)
+      end,
+      enabled_func = function()
+        return self.queue ~= nil and self.queue:count() > 0
+      end,
+      sub_item_table_func = function()
+        return self:getPendingItems()
+      end,
+    },
+    {
+      text = _("Clear queued updates"),
+      enabled_func = function()
+        return self.queue ~= nil and self.queue:count() > 0
+      end,
+      callback = function(menu_instance)
+        self.dialog_manager:confirm({
+          text = T(_("Delete %1 queued update(s) without sending them to Hardcover?"), self.queue:count()),
+          ok_text = _("Delete"),
+          ok_callback = function()
+            self.queue:clear()
+            menu_instance:updateItems()
+          end,
+        })
+      end,
+      keep_menu_open = true
+    },
+    {
+      text_func = function()
+        local limit = self.queue and self.queue:retryLimit() or 3
+        if limit == 0 then
+          return _("Ask about failed updates: never")
+        end
+        return T(_("Ask about failed updates after %1 tries"), limit)
+      end,
+      callback = function(menu_instance)
+        UIManager:show(SpinWidget:new {
+          value = self.queue:retryLimit(),
+          value_min = 0,
+          value_max = 20,
+          value_step = 1,
+          value_hold_step = 5,
+          ok_always_enabled = true,
+          ok_text = _("Save"),
+          title_text = _("Tries before asking (0 = never ask)"),
+          callback = function(spin)
+            self.settings:updateSetting(self.queue.RETRY_KEY, spin.value)
+            menu_instance:updateItems()
+          end
+        })
+      end,
+      keep_menu_open = true
+    },
+    {
+      text = _("Sync Log"),
+      callback = function()
+        local text = self.queue and self.queue:logText()
+        if not text then
+          UIManager:show(InfoMessage:new {
+            text = _("Nothing has been sent from the offline queue in the last 7 days"),
+          })
+          return
+        end
+        UIManager:show(TextViewer:new {
+          title = _("Sync Log (last 7 days)"),
+          text = text,
+        })
+      end,
+      keep_menu_open = true,
       separator = true
     },
     {
@@ -493,7 +590,7 @@ function HardcoverMenu:getStatusSubMenuItems()
               self.state.book_status = result
               menu_instance:updateItems()
             else
-              self.dialog_magager:showError("Rating could not be saved")
+              self.dialog_manager:showError("Rating could not be saved")
             end
           end
         }
@@ -598,6 +695,89 @@ function HardcoverMenu:getTrackingSubMenuItems()
   }
 end
 
+-- Choose when a book counts as started: after a percentage of the book, or after minutes of reading
+function HardcoverMenu:getReadingAfterSubMenuItems()
+  local TYPE = SETTING.READING_AFTER_TYPE
+  local function spinItem(label_func, type_name, value_func, min, max, step, hold, title, key)
+    return {
+      text_func = label_func,
+      enabled_func = function()
+        return (self.settings:readingAfterByMinutes() and TYPE.MINUTES or TYPE.PERCENT) == type_name
+      end,
+      callback = function(menu_instance)
+        UIManager:show(SpinWidget:new {
+          value = value_func(),
+          value_min = min,
+          value_max = max,
+          value_step = step,
+          value_hold_step = hold,
+          ok_text = _("Save"),
+          title_text = title,
+          callback = function(spin)
+            self.settings:updateSetting(key, spin.value)
+            menu_instance:updateItems()
+          end
+        })
+      end,
+      keep_menu_open = true,
+    }
+  end
+
+  return {
+    {
+      text = "After a percentage of the book",
+      radio = true,
+      checked_func = function()
+        return not self.settings:readingAfterByMinutes()
+      end,
+      callback = function()
+        self.settings:updateSetting(SETTING.READING_AFTER, TYPE.PERCENT)
+      end,
+      keep_menu_open = true,
+    },
+    spinItem(function()
+      return "At " .. self.settings:readingAfterPercent() .. "% of the book"
+    end, TYPE.PERCENT, function() return self.settings:readingAfterPercent() end,
+      1, 50, 1, 5, _("Percent of the book"), SETTING.READING_AFTER_PERCENT),
+    {
+      text = "After minutes of reading",
+      radio = true,
+      checked_func = function()
+        return self.settings:readingAfterByMinutes()
+      end,
+      callback = function()
+        self.settings:updateSetting(SETTING.READING_AFTER, TYPE.MINUTES)
+      end,
+      keep_menu_open = true,
+    },
+    spinItem(function()
+      return "After " .. self.settings:readingAfterMinutes() .. " minutes of reading"
+    end, TYPE.MINUTES, function() return self.settings:readingAfterMinutes() end,
+      1, 240, 1, 10, _("Minutes of reading"), SETTING.READING_AFTER_MINUTES),
+  }
+end
+
+function HardcoverMenu:getAutoModeSubMenuItems(setting_key)
+  local function option(label, mode)
+    return {
+      text = label,
+      radio = true,
+      checked_func = function()
+        return (self.settings:readSetting(setting_key) or SETTING.AUTO_MODE.OFF) == mode
+      end,
+      callback = function()
+        self.settings:updateSetting(setting_key, mode)
+      end,
+    }
+  end
+
+  return {
+    option("Off", SETTING.AUTO_MODE.OFF),
+    option("Ask first", SETTING.AUTO_MODE.ASK),
+    option("Automatic", SETTING.AUTO_MODE.AUTO),
+  }
+end
+
 function HardcoverMenu:getSettingsSubMenuItems()
   return {
     {
@@ -633,14 +813,26 @@ function HardcoverMenu:getSettingsSubMenuItems()
     },
     {
       text_func = function()
-        return "Track progress settings: " .. ""
+        local labels = { off = "Off", ask = "Ask first", auto = "Automatic" }
+        return "'Currently Reading' updates by default: " .. (labels[self.settings:autoReadingMode()] or "Off")
       end,
       sub_item_table_func = function()
-        return self:getTrackingSubMenuItems()
+        return self:getAutoModeSubMenuItems(SETTING.AUTO_READING)
       end,
     },
     {
-      text = "Always track progress by default",
+      text_func = function()
+        if self.settings:readingAfterByMinutes() then
+          return "Currently Reading after: " .. self.settings:readingAfterMinutes() .. " minutes of reading"
+        end
+        return "Currently Reading after: " .. self.settings:readingAfterPercent() .. "% of the book"
+      end,
+      sub_item_table_func = function()
+        return self:getReadingAfterSubMenuItems()
+      end,
+    },
+    {
+      text = "Reading progress updates by default",
       checked_func = function()
         return self.settings:readSetting(SETTING.ALWAYS_SYNC) == true
       end,
@@ -650,17 +842,38 @@ function HardcoverMenu:getSettingsSubMenuItems()
       end,
     },
     {
-      text = "Enable wifi on demand",
-      checked_func = function()
-        return self.settings:readSetting(SETTING.ENABLE_WIFI) == true
+      text_func = function()
+        if self.settings:trackByProgress() then
+          return "Progress updates after: Every " .. self.settings:trackPercentageInterval() .. "% completed"
+        end
+        return "Progress updates after: Every " .. self.settings:trackFrequency() .. " minutes"
       end,
-      enabled_func = function()
-        return Device:hasWifiRestore()
+      sub_item_table_func = function()
+        return self:getTrackingSubMenuItems()
+      end,
+    },
+    {
+      text_func = function()
+        local labels = { off = "Off", ask = "Ask first", auto = "Automatic" }
+        return "'Read' status updates by default: " .. (labels[self.settings:autoFinishingMode()] or "Off")
+      end,
+      sub_item_table_func = function()
+        return self:getAutoModeSubMenuItems(SETTING.AUTO_FINISHING)
+      end,
+    },
+    {
+      text = "Rating prompt when marked 'Read' by default",
+      checked_func = function()
+        return self.settings:askRating()
       end,
       callback = function()
-        local setting = self.settings:readSetting(SETTING.ENABLE_WIFI) == true
-        self.settings:updateSetting(SETTING.ENABLE_WIFI, not setting)
-      end
+        self.settings:updateSetting(SETTING.ASK_RATING, not self.settings:askRating())
+      end,
+      hold_callback = function()
+        UIManager:show(InfoMessage:new {
+          text = _([[After you answer Yes to "Mark this book as Read?", asks how many stars to give it. Works whether 'Read' status updates are set to "Ask first" or "Automatic".]]),
+        })
+      end,
     },
     {
       text = "Confirm changes to book read status",
@@ -670,7 +883,22 @@ function HardcoverMenu:getSettingsSubMenuItems()
       callback = function()
         local setting = self.settings:menuConfirm() == true
         self.settings:setMenuConfirm(not setting)
-      end
+      end,
+      separator = true,
+    },
+    {
+      text = "Suppress all pop-up notifications",
+      checked_func = function()
+        return self.settings:suppressNotifications()
+      end,
+      callback = function()
+        self.settings:updateSetting(SETTING.SUPPRESS_NOTIFICATIONS, not self.settings:suppressNotifications())
+      end,
+      hold_callback = function()
+        UIManager:show(InfoMessage:new {
+          text = _("Hides the brief messages such as \"Marked as Currently Reading\", \"Synced to Hardcover\" and \"Saved. Will be sent when online\". Error messages and answers to menu actions still show."),
+        })
+      end,
     },
     {
       text = "Compatibility mode",
@@ -690,6 +918,311 @@ May improve compatibility for some versions of KOReader]],
       end
     }
   }
+end
+
+-- ---------------------------------------------------------------------------------------
+-- Per-book rules: "Always sync this book" / "Never sync this book"
+-- ---------------------------------------------------------------------------------------
+
+local RULE_ITEMS = {
+  { key = "progress", label = "Progress" },
+  { key = "reading", label = "Currently Reading" },
+  { key = "read", label = "Read" },
+  { key = "rating", label = "Rating" },
+}
+
+function HardcoverMenu:bookFile()
+  return self.ui.document and self.ui.document.file
+end
+
+-- the book's rule for one item (nil: follows the global setting)
+function HardcoverMenu:ruleValue(item)
+  return self.settings:bookRule(self:bookFile(), item)
+end
+
+-- is this rule value one of the "always" kind (switched on for the book)?
+local function isAlways(item, rule)
+  if item == "progress" then
+    return rule == "always"
+  elseif item == "rating" then
+    return rule == "ask"
+  end
+  return rule == "auto" or rule == "ask"
+end
+
+-- writes rules for several items at once: changes = { progress = "always", rating = false, ... }
+-- (false removes a rule so the book follows the global setting again)
+function HardcoverMenu:setRules(changes)
+  local file = self:bookFile()
+  if not file then
+    return
+  end
+
+  local config = { _delete = {} }
+  for item, value in pairs(changes) do
+    local key = self.settings.RULE_KEYS[item]
+    if value then
+      config[key] = value
+    else
+      table.insert(config._delete, key)
+    end
+  end
+  self.settings:updateBookSetting(file, config)
+end
+
+-- short text for the right-hand side of the two menu entries
+function HardcoverMenu:ruleSummary(kind)
+  local names = {}
+  for _i, item in ipairs(RULE_ITEMS) do
+    local rule = self:ruleValue(item.key)
+    if (kind == "always" and isAlways(item.key, rule)) or (kind == "never" and rule == "never") then
+      table.insert(names, item.label)
+    end
+  end
+  if #names == 0 then
+    return ""
+  elseif #names == #RULE_ITEMS then
+    return _("All")
+  end
+  return table.concat(names, ", ")
+end
+
+function HardcoverMenu:ruleModeLabel(rule)
+  if rule == "auto" then
+    return _("Automatic")
+  elseif rule == "ask" then
+    return _("Ask first")
+  elseif rule == "never" then
+    return _("Never (set under Never sync this book)")
+  end
+  return _("Follow global setting")
+end
+
+function HardcoverMenu:getAlwaysSyncItems()
+  local function statusItem(item, label)
+    local function option(text, value)
+      return {
+        text = text,
+        radio = true,
+        checked_func = function()
+          return self:ruleValue(item) == value
+        end,
+        callback = function(menu_instance)
+          self:setRules({ [item] = value or false })
+          if menu_instance and menu_instance.updateItems then
+            menu_instance:updateItems()
+          end
+        end,
+        keep_menu_open = true,
+      }
+    end
+
+    return {
+      text_func = function()
+        return label .. ": " .. self:ruleModeLabel(self:ruleValue(item))
+      end,
+      checked_func = function()
+        return isAlways(item, self:ruleValue(item))
+      end,
+      sub_item_table = {
+        option(_("Follow global setting"), nil),
+        option(_("Automatic"), "auto"),
+        option(_("Ask first"), "ask"),
+      },
+    }
+  end
+
+  return {
+    {
+      text = _("Enable all"),
+      checked_func = function()
+        for _i, item in ipairs(RULE_ITEMS) do
+          if not isAlways(item.key, self:ruleValue(item.key)) then
+            return false
+          end
+        end
+        return true
+      end,
+      callback = function(menu_instance)
+        local all_on = true
+        for _i, item in ipairs(RULE_ITEMS) do
+          if not isAlways(item.key, self:ruleValue(item.key)) then
+            all_on = false
+          end
+        end
+
+        if all_on then
+          self:setRules({ progress = false, reading = false, read = false, rating = false })
+        else
+          local reading = self:ruleValue("reading")
+          local read = self:ruleValue("read")
+          self:setRules({
+            progress = "always",
+            reading = (reading == "ask") and "ask" or "auto",
+            read = (read == "ask") and "ask" or "auto",
+            rating = "ask",
+          })
+        end
+        menu_instance:updateItems()
+      end,
+      keep_menu_open = true,
+      separator = true,
+    },
+    {
+      text = _("Progress"),
+      checked_func = function()
+        return self:ruleValue("progress") == "always"
+      end,
+      callback = function(menu_instance)
+        local on = self:ruleValue("progress") == "always"
+        self:setRules({ progress = (not on) and "always" or false })
+        menu_instance:updateItems()
+      end,
+      keep_menu_open = true,
+    },
+    statusItem("reading", _("Currently Reading")),
+    statusItem("read", _("Read")),
+    {
+      text = _("Rating (ask after marking Read)"),
+      checked_func = function()
+        return self:ruleValue("rating") == "ask"
+      end,
+      callback = function(menu_instance)
+        local on = self:ruleValue("rating") == "ask"
+        self:setRules({ rating = (not on) and "ask" or false })
+        menu_instance:updateItems()
+      end,
+      keep_menu_open = true,
+    },
+  }
+end
+
+function HardcoverMenu:getNeverSyncItems()
+  local file = self:bookFile()
+
+  local function neverItem(item, label, menu_text)
+    return {
+      text = menu_text or label,
+      checked_func = function()
+        return self:ruleValue(item) == "never"
+      end,
+      callback = function(menu_instance)
+        local current = self:ruleValue(item)
+        if current == "never" then
+          self:setRules({ [item] = false })
+          menu_instance:updateItems()
+          return
+        end
+
+        local apply = function()
+          self:setRules({ [item] = "never" })
+          self.queue:dropParts(self:bookFile(), item)
+          menu_instance:updateItems()
+        end
+
+        if self.queue:pendingParts(self:bookFile())[item] then
+          self.dialog_manager:confirm({
+            text = T(_("Stop syncing %1 for this book?\n\nThis will clear any %1 updates pending for this title."), label),
+            ok_text = _("Yes"),
+            ok_callback = apply,
+          })
+        else
+          apply()
+        end
+      end,
+      keep_menu_open = true,
+    }
+  end
+
+  return {
+    {
+      text = _("Enable all"),
+      checked_func = function()
+        for _i, item in ipairs(RULE_ITEMS) do
+          if self:ruleValue(item.key) ~= "never" then
+            return false
+          end
+        end
+        return true
+      end,
+      callback = function(menu_instance)
+        local all_never = true
+        for _i, item in ipairs(RULE_ITEMS) do
+          if self:ruleValue(item.key) ~= "never" then
+            all_never = false
+          end
+        end
+
+        if all_never then
+          self:setRules({ progress = false, reading = false, read = false, rating = false })
+          menu_instance:updateItems()
+          return
+        end
+
+        self.dialog_manager:confirm({
+          text = _("Are you sure you want to disable all updates to Hardcover for this book?\n\nThis will clear all Hardcover sync updates pending for this title."),
+          ok_text = _("Yes"),
+          ok_callback = function()
+            self:setRules({ progress = "never", reading = "never", read = "never", rating = "never" })
+            self.queue:dropParts(self:bookFile(), "all")
+            menu_instance:updateItems()
+          end,
+        })
+      end,
+      keep_menu_open = true,
+      separator = true,
+    },
+    neverItem("progress", _("Progress")),
+    neverItem("reading", _("Currently Reading")),
+    neverItem("read", _("Read")),
+    neverItem("rating", _("Rating")),
+  }
+end
+
+-- One row per book waiting in the offline queue; tapping a row offers to remove it
+function HardcoverMenu:getPendingItems()
+  local items = {}
+
+  for _i, row in ipairs(self.queue:pendingList()) do
+    table.insert(items, {
+      text = row.title,
+      mandatory = row.what,
+      callback = function(menu_instance)
+        local lines = { row.title, row.what }
+        if not row.linked then
+          table.insert(lines, _("Not linked to a Hardcover book yet"))
+        end
+        if row.failures > 0 then
+          table.insert(lines, T(_("Failed tries: %1"), row.failures))
+        end
+        if row.last_error then
+          table.insert(lines, T(_("Last problem: %1"), row.last_error))
+        end
+        table.insert(lines, "")
+        table.insert(lines, _("Remove this update from the queue without sending it?"))
+
+        self.dialog_manager:confirm({
+          text = table.concat(lines, "\n"),
+          ok_text = _("Remove"),
+          ok_callback = function()
+            self.queue:discard(row.file, row.title, "removed from the pending list")
+            menu_instance.item_table = self:getPendingItems()
+            menu_instance:updateItems()
+          end,
+        })
+      end,
+      keep_menu_open = true,
+    })
+  end
+
+  if #items == 0 then
+    table.insert(items, {
+      text = _("Nothing is waiting"),
+      enabled = false,
+    })
+  end
+
+  return items
 end
 
 return HardcoverMenu

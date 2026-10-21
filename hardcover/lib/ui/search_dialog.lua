@@ -9,7 +9,6 @@ local SearchMenu = require("hardcover/lib/ui/search_menu")
 local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
-local logger = require("logger")
 local _t = require("hardcover/lib/table_util")
 
 local Screen = Device.screen
@@ -19,7 +18,7 @@ local HardcoverSearchDialog = InputContainer:extend {
   bordersize = Size.border.window,
   items = {},
   active_item = {},
-  select_cb = nil,
+  select_book_cb = nil,
   title = nil,
   search_callback = nil,
   left_icon_callback = nil,
@@ -40,7 +39,7 @@ function HardcoverSearchDialog:createListItem(book, active_item)
   end
 
   if #book.contributions > 0 then
-    for _, a in ipairs(book.contributions) do
+    for _i, a in ipairs(book.contributions) do
       table.insert(authors, a.author.name)
     end
   end
@@ -219,23 +218,12 @@ function HardcoverSearchDialog:search()
   search_dialog:onShowKeyboard()
 end
 
-function HardcoverSearchDialog:setTitle(title)
-  self.menu.title = title
-end
-
 function HardcoverSearchDialog:onClose()
   UIManager:close(self)
   if self.close_callback then
     self.close_callback()
   end
 
-  return true
-end
-
-function HardcoverSearchDialog:onTapClose(arg, ges)
-  if ges.pos:notIntersectWith(self.movable.dimen) then
-    self:onClose()
-  end
   return true
 end
 
@@ -254,7 +242,7 @@ function HardcoverSearchDialog:setItems(title, items, active_item)
   self.menu._covermenu_onclose_done = false
   local new_item_table = self:parseItems(items, active_item)
   if self.menu.item_table then
-    for _, v in ipairs(self.menu.item_table) do
+    for _i, v in ipairs(self.menu.item_table) do
       if v.cover_bb then
         v.cover_bb:free()
       end
