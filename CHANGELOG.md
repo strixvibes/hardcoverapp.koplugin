@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.0 (2026-10-21)
+
+### Upgrading
+
+- The old per-book "sync" setting is converted automatically to the new "Always sync this book" rules the first time a book is opened. Nothing needs doing.
+- The "Wifi on demand" option has been removed. The plugin no longer switches wifi on by itself (KOReader still offers to turn it on for manual actions such as "Sync now").
+- Marking a book as finished in KOReader by any other route no longer sends anything to Hardcover. Use the plugin's own "Mark as Read" prompt or automatic updates instead.
+
+### Added
+
+- "Currently Reading" updates: when a book has been read far enough, it is marked Currently Reading on Hardcover and the start date is recorded. Choose Off, Ask first or Automatic.
+- "Currently Reading after" setting: choose a percentage of the book (default 5%) or a number of minutes of reading (default 10).
+- "Read" updates: when you reach the end of a book, the plugin can ask "Mark this book as Read on Hardcover?" (Ask first) or do it straight away (Automatic). The finish date is recorded, and KOReader's own end-of-book action carries on afterwards.
+- Optional star rating: a 0 to 5 star dialog (half-star steps, starting at 2.5, wrapping round at either end, with Skip) shown when a book is marked Read, in Ask first or Automatic mode.
+- Offline queue: when Hardcover cannot be reached, starts, progress, finishes and ratings are saved on the device and sent automatically when a connection returns, in the right order and with the correct dates.
+- Books that are not linked yet are saved with their title, author and identifiers, and are linked and sent once automatic or manual linking succeeds.
+- Menu items for the queue: "Sync N queued updates now", "Pending updates" (tap one to remove it), "Clear queued updates" and "Sync Log" (the last 7 days, newest first).
+- Retries: failed updates caused by the network are retried automatically. If Hardcover refuses an update, you are asked after a number of tries (default 3, "Tries before asking") whether to keep or remove it.
+- Per-book rules: "Always sync this book" and "Never sync this book", each with Progress, Currently Reading, Read and Rating, plus "Enable all". They override the global settings for that book only.
+- Choosing "Never for this book" on the Currently Reading question switches all updates off for that book after confirmation, and clears its queued updates.
+- "Reset book data" in KOReader or Bookshelf now also clears a book's Always/Never rules. The Hardcover link is kept.
+- Notice when automatic linking finds no match: "No suitable automatic link found; manual linking required".
+- "Suppress all pop-up notifications" setting that hides the brief automatic messages (errors and answers to menu actions still show).
+- Progress is sent as a page of the edition being read on Hardcover, so the percentage on Hardcover matches the one in KOReader.
+- Progress is never moved backwards. If Hardcover already shows a later page, the older update is dropped and a short notice is shown.
+- While "Read" updates are on, the last page is not sent as progress, so Hardcover does not mark the book Read by itself.
+
+### Changed
+
+- Settings menu reorganised and reworded into three groups (automatic linking, updates, other), with shorter labels for small screens.
+- A book that is already past the Currently Reading threshold when first opened is offered once.
+- Switching Currently Reading from Off to Ask first or Automatic offers it again to the book you are reading.
+- README rewritten to cover all of the above.
+
+### Fixes
+
+- Fixed duplicate "Marked as Currently Reading" messages and duplicate progress sends.
+- Fixed the Currently Reading question not appearing when rules were changed while a book was open.
+- Fixed the "no automatic link" state carrying over from one book to the next.
+
+### Chores
+
+- Removed unused code and settings, and moved the setting names into the constants file.
+
+
 ## 0.4.0 (2026-04-26)
 
 ### Added
