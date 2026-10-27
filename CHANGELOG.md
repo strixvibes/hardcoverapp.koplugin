@@ -1,3 +1,5 @@
+# Changelog
+
 ## 0.6.0 (2026-10-26)
 
 ### Added
@@ -13,8 +15,6 @@
 - `hardcover_config.lua` is now optional; it is only needed for an API key.
 - The sign-in item is the first item in the Hardcover menu. While not signed in, "Sync queued updates now" and "Suggest a book" are greyed out.
 - The About page, the version check and the plugin's identification now point to this fork.
-
-# Changelog
 
 ## 0.5.0 (2026-10-21)
 
