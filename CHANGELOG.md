@@ -1,3 +1,19 @@
+## 0.6.0 (2026-10-26)
+
+### Added
+
+- Sign in with Hardcover: the "Sign in to Hardcover" menu item shows a short code and a web address; approve it on your phone or computer and the plugin is connected. No API key or config file is needed.
+- The sign-in renews itself automatically. "Signed in to Hardcover (tap to sign out)" signs you out and ends the session on Hardcover.
+- The API key still works. If both are present the sign-in is used and the key is kept as a fallback.
+- When there is neither a sign-in nor an API key, a box with "Sign in" and "Cancel" buttons appears when KOReader starts and each time the device wakes. It is not hidden by "Suppress all pop-up notifications".
+- While not signed in, progress, starts, finishes and ratings are saved in the offline queue, then sent after you sign in (or add a key).
+
+### Changed
+
+- `hardcover_config.lua` is now optional; it is only needed for an API key.
+- The sign-in item is the first item in the Hardcover menu. While not signed in, "Sync queued updates now" and "Suggest a book" are greyed out.
+- The About page, the version check and the plugin's identification now point to this fork.
+
 # Changelog
 
 ## 0.5.0 (2026-10-21)
