@@ -718,6 +718,11 @@ end
 function Queue:sync(opts)
   opts = opts or {}
 
+  -- nothing can be sent until the user has signed in (or set an API key)
+  if not Api:hasCredentials() then
+    return false
+  end
+
   if self.running then
     return false
   end

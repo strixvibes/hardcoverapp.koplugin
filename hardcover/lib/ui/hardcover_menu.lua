@@ -10,12 +10,15 @@ local Font = require("ui/font")
 local UIManager = require("ui/uimanager")
 
 local UpdateDoubleSpinWidget = require("hardcover/lib/ui/update_double_spin_widget")
+local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local TextViewer = require("ui/widget/textviewer")
 local SpinWidget = require("ui/widget/spinwidget")
 
 local Api = require("hardcover/lib/hardcover_api")
 local Github = require("hardcover/lib/github")
+local Oauth = require("hardcover/lib/oauth")
+local SignInDialog = require("hardcover/lib/ui/sign_in_dialog")
 local User = require("hardcover/lib/user")
 local _t = require("hardcover/lib/table_util")
 
@@ -41,9 +44,8 @@ local privacy_labels = {
 
 function HardcoverMenu:mainMenu()
   return {
-    enabled_func = function()
-      return self.enabled
-    end,
+    -- always usable, so that signing in is possible when the plugin has been switched off
+    -- because the sign-in is missing or expired
     text_func = function()
       return self.settings:bookLinked() and _("Hardcover: " .. ICON.LINK) or _("Hardcover")
     end,
@@ -56,6 +58,39 @@ end
 
 function HardcoverMenu:getSubMenuItems(book_view)
   local menu_items = {
+    {
+      text_func = function()
+        if Oauth.isSignedIn() then
+          return _("Signed in to Hardcover (tap to sign out)")
+        elseif Api:usesApiKey() then
+          if Api:hasCredentials() then
+            return _("Using API key (tap to sign in to Hardcover instead)")
+          end
+          return _("API key not working (tap to sign in to Hardcover)")
+        end
+        return _("Sign in to Hardcover")
+      end,
+      callback = function(menu_instance)
+        if Oauth.isSignedIn() then
+          UIManager:show(ConfirmBox:new {
+            text = _("Sign out of Hardcover? Updates will stop until you sign in again, or use an API key."),
+            ok_text = _("Sign out"),
+            ok_callback = function()
+              Oauth.signOut()
+              self.auth_changed()
+              menu_instance:updateItems()
+            end,
+          })
+        else
+          SignInDialog.start(function()
+            self.auth_changed()
+            menu_instance:updateItems()
+          end)
+        end
+      end,
+      keep_menu_open = true,
+      separator = true,
+    },
     book_view and {
       text_func = function()
         if self.settings:bookLinked() then
@@ -171,7 +206,7 @@ function HardcoverMenu:getSubMenuItems(book_view)
         return T(_("Sync %1 queued update(s) now"), waiting)
       end,
       enabled_func = function()
-        return self.queue ~= nil and self.queue:count() > 0
+        return self.enabled and self.queue ~= nil and self.queue:count() > 0
       end,
       callback = function()
         self.sync_queue()
@@ -256,6 +291,9 @@ function HardcoverMenu:getSubMenuItems(book_view)
     },
     {
       text = _("Suggest a book"),
+      enabled_func = function()
+        return self.enabled
+      end,
       callback = function()
         self.hardcover:showRandomBookDialog()
       end,
@@ -288,7 +326,7 @@ v]] .. version .. new_release_str .. [[
 Updates book progress and status on Hardcover.app
 
 Project:
-github.com/billiam/hardcoverapp.koplugin
+github.com/strixvibes/hardcoverapp.koplugin
 
 Settings:
 ]] .. settings_file,

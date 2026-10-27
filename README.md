@@ -9,11 +9,39 @@ per-book "Always sync" / "Never sync" rules.
 ## Installation
 
 1. Download and extract the plugin.
-2. Rename `hardcover_config.example.lua` to `hardcover_config.lua`
-3. Fetch your API key from https://hardcover.app/account/api (just the part after `Bearer `)
-4. Add your API key to the `token` field in `hardcover_config.lua`, between the `''` quotes. For example:
+2. Install the plugin by copying the `hardcoverapp.koplugin` folder to the KOReader plugins folder on your device.
+3. Restart KOReader and [sign in to Hardcover](#signing-in), or use an API key (see below).
+
+### Connecting to Hardcover
+
+There are two ways to connect to Hardcover, and both are fully supported. You only need one. Signing in with Hardcover (OAuth) is the preferred option and is listed first; an API key is the alternative.
+
+**Option 1: Sign in with Hardcover (OAuth, preferred)**
+
+1. Open the Hardcover menu in a book and choose `Sign in to Hardcover` (turn wifi on first).
+2. The screen shows a web address and a short code. On your phone or computer, go to that address and enter the code.
+3. Approve the sign-in on Hardcover. The Kobo shows "Signed in to Hardcover".
+
+The sign-in renews itself, so you should not need to repeat this. `Signed in to Hardcover (tap to sign out)` signs you out: the sign-in is removed from the device and its session is ended on Hardcover. Hardcover may still list the app under Authorized apps; that only records that you once approved it (use `Revoke Access` there to remove it).
+
+**Option 2: API key**
+
+1. Rename `hardcover_config.example.lua` to `hardcover_config.lua`
+2. Fetch your API key from https://hardcover.app/account/api (just the part after `Bearer `)
+3. Add your API key to the `token` field in `hardcover_config.lua`, between the `''` quotes. For example:
    `token = 'abcde...fghij'`
-5. Install the plugin by copying the `hardcoverapp.koplugin` folder to the KOReader plugins folder on your device
+
+An API key may only contain letters, digits and the characters `- . _ ~ + / = :` (spaces at either end are ignored). A blank key, or one containing anything else, is reported as invalid straight away. API keys expire after a year.
+
+**Using both**
+
+If you are signed in, the sign-in is used and the API key is kept as a fallback, in case the sign-in stops working (for example if it is revoked on Hardcover). While you are signed in, problems with the API key are not reported. If the sign-in stops working, a short notice says the key is being used instead. Sign out to use the key on its own.
+
+**When nothing is connected**
+
+- No `hardcover_config.lua` file and not signed in: a box offers `Sign in` or `Cancel` when KOReader starts and every time the device wakes.
+- `hardcover_config.lua` exists (even with a blank key) and you are not signed in: the plugin reports "Hardcover API key invalid" in the same way, with the same `Sign in` button, so you know the key needs fixing.
+- These boxes are never hidden by "Suppress all pop-up notifications". Meanwhile progress, start and finish updates are kept in the offline queue and sent once a connection works.
 
 ## Usage
 

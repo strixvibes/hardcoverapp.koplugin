@@ -1,5 +1,27 @@
-local config = require("hardcover_config")
 local logger = require("logger")
+
+-- The API key file is optional: without it the plugin uses the token from "Sign in to Hardcover"
+-- (see oauth.lua)
+local config_loaded, config = pcall(require, "hardcover_config")
+local key_file_present = config_loaded and type(config) == "table"
+local config_token = key_file_present and config.token or nil
+
+-- Spaces around the key are ignored. A key may only contain the characters that are allowed in a
+-- bearer token (letters, digits and - . _ ~ + / = :); anything else, including a blank key, is
+-- refused here rather than sent to Hardcover. The file still counts as present (see
+-- HardcoverApi:hasKeyFile), so the user is told the API key is invalid. The format of the key
+-- itself (prefix, length) is deliberately not checked, so a change by Hardcover cannot break it.
+if type(config_token) == "string" then
+  config_token = config_token:match("^%s*(.-)%s*$")
+  if not config_token:find("^[A-Za-z0-9%-%._~%+/=:]+$") then
+    if config_token ~= "" then
+      logger.warn("HARDCOVER: the API key in hardcover_config.lua contains characters a key cannot have")
+    end
+    config_token = nil
+  end
+else
+  config_token = nil
+end
 local http = require("socket.http")
 local ltn12 = require("ltn12")
 local json = require("json")
@@ -10,16 +32,38 @@ local NetworkManager = require("ui/network/manager")
 local socketutil = require("socketutil")
 
 local Book = require("hardcover/lib/book")
+local Oauth = require("hardcover/lib/oauth")
+local HARDCOVER = require("hardcover/lib/constants/hardcover")
 local VERSION = require("hardcover_version")
 
 local api_url = "https://api.hardcover.app/v1/graphql"
 
-local headers = {
-  ["Content-Type"] = "application/json",
-  ["User-Agent"] = T("hardcoverapp.koplugin/%1 (https://github.com/billiam/hardcoverapp.koplugin)",
-    table.concat(VERSION, ".")),
-  Authorization = "Bearer " .. config.token
-}
+local user_agent = T("hardcoverapp.koplugin/%1 (https://github.com/strixvibes/hardcoverapp.koplugin)",
+  table.concat(VERSION, "."))
+
+-- Set once Hardcover has refused the API key. The key is then not used again until KOReader is
+-- restarted (the user has to correct it), and the plugin treats it like having no key.
+local key_rejected = false
+
+-- The token for the next request: the signed-in token if there is one, else the API key
+local function currentToken()
+  return Oauth.accessToken() or (not key_rejected and config_token or nil)
+end
+
+local function requestHeaders()
+  return {
+    ["Content-Type"] = "application/json",
+    ["User-Agent"] = user_agent,
+    Authorization = "Bearer " .. currentToken(),
+  }
+end
+
+-- Whether Hardcover's answer means "your token is not valid (any more)"
+local function isTokenError(err)
+  return err == HARDCOVER.ERROR.TOKEN
+    or _t.dig(err, "extensions", "code") == HARDCOVER.ERROR.JWT
+    or (type(err) == "table" and err.message and string.find(err.message, "JWT") ~= nil)
+end
 
 local HardcoverApi = {
   enabled = true
@@ -113,9 +157,47 @@ function HardcoverApi:me()
   return {}
 end
 
-function HardcoverApi:query(query, parameters)
+function HardcoverApi:hasCredentials()
+  return currentToken() ~= nil
+end
+
+-- The sign-in has stopped working and was removed. When a usable API key is there to take over,
+-- on_signin_lost() lets the plugin say so.
+function HardcoverApi:signInLost()
+  if config_token and not key_rejected and self.on_signin_lost then
+    self.on_signin_lost()
+  end
+end
+
+-- true when hardcover_config.lua exists, whatever it contains: the user has chosen to use an API key
+function HardcoverApi:hasKeyFile()
+  return key_file_present
+end
+
+-- true when requests are meant to use the API key from hardcover_config.lua (not a signed-in token)
+function HardcoverApi:usesApiKey()
+  return key_file_present and not Oauth.isSignedIn()
+end
+
+function HardcoverApi:query(query, parameters, renewed)
   if not NetworkManager:isConnected() or not self.enabled then
     return
+  end
+
+  if not self:hasCredentials() then
+    if self.on_error then
+      self.on_error(HARDCOVER.ERROR.TOKEN)
+    end
+    return nil, { no_credentials = true }
+  end
+
+  -- a signed-in token is renewed before it runs out (an API key never needs this)
+  if Oauth.isSignedIn() and not renewed then
+    local _ok, why = Oauth.refreshIfNeeded()
+    if why == "rejected" then
+      self:signInLost()
+      return self:query(query, parameters, true)
+    end
   end
 
   local completed, success, content
@@ -127,14 +209,47 @@ function HardcoverApi:query(query, parameters)
   if completed and content then
     local code, response = string.match(content, "^([^:]*):(.*)")
     if string.find(code, "^%d%d%d") then
-      local data = json.decode(response, json.decode.simple)
+      local decoded_ok, data = pcall(json.decode, response, json.decode.simple)
+      if not decoded_ok or type(data) ~= "table" then
+        data = {}
+      end
       if data.data then
         return data.data
-      elseif data.errors or data.error then
-        local err = data.errors or { data.error }
+      elseif data.errors or data.error or code == "401" then
+        -- a 401 always means the token was refused, whatever the answer says
+        local err = data.errors or { data.error or HARDCOVER.ERROR.TOKEN }
+
+        -- a signed-in token Hardcover no longer accepts: renew it and ask again, once
+        if not renewed and Oauth.isSignedIn() and (code == "401" or isTokenError(err[1])) then
+          local renewed_ok, why = Oauth.refresh()
+          if renewed_ok or not Oauth.isSignedIn() then
+            if not renewed_ok then
+              self:signInLost()
+            end
+            return self:query(query, parameters, true)
+          elseif why == "unreachable" then
+            -- could not renew right now: treated like any other failed request, tried again later
+            return nil, { completed = false }
+          end
+        end
+
+        local token_refused = code == "401"
+        for _, e in ipairs(err) do
+          if isTokenError(e) then
+            token_refused = true
+          end
+        end
+        -- Hardcover refused the API key: it is not used again (see key_rejected)
+        if token_refused and not Oauth.isSignedIn() then
+          key_rejected = true
+        end
+
         if self.on_error then
           for _, e in ipairs(err) do
             self.on_error(e)
+          end
+          if token_refused then
+            self.on_error(HARDCOVER.ERROR.TOKEN)
           end
         end
 
@@ -162,7 +277,7 @@ function HardcoverApi:_query(query, parameters)
   local request = {
     url = api_url,
     method = "POST",
-    headers = headers,
+    headers = requestHeaders(),
     source = ltn12.source.string(json.encode(requestBody)),
     sink = socketutil.table_sink(sink),
   }

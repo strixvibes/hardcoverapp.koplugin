@@ -5,11 +5,13 @@ local Dispatcher = require("dispatcher")
 local logger = require("logger")
 local math = require("math")
 
+local Font = require("ui/font")
 local NetworkManager = require("ui/network/manager")
 local T = require("ffi/util").template
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
 
+local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Notification = require("ui/widget/notification")
 local SpinWidget = require("ui/widget/spinwidget")
@@ -18,6 +20,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local _t = require("hardcover/lib/table_util")
 local Api = require("hardcover/lib/hardcover_api")
+local Oauth = require("hardcover/lib/oauth")
 local AutoWifi = require("hardcover/lib/auto_wifi")
 local Cache = require("hardcover/lib/cache")
 local debounce = require("hardcover/lib/debounce")
@@ -30,6 +33,7 @@ local throttle = require("hardcover/lib/throttle")
 local User = require("hardcover/lib/user")
 
 local DialogManager = require("hardcover/lib/ui/dialog_manager")
+local SignInDialog = require("hardcover/lib/ui/sign_in_dialog")
 local HardcoverMenu = require("hardcover/lib/ui/hardcover_menu")
 
 local HARDCOVER = require("hardcover/lib/constants/hardcover")
@@ -113,9 +117,22 @@ function HardcoverApp:init()
 
     if err == HARDCOVER.ERROR.TOKEN or _t.dig(err, "extensions", "code") == HARDCOVER.ERROR.JWT or (err.message and string.find(err.message, "JWT")) then
       self:disable()
+      self:showSignInPrompt(Api:usesApiKey()
+          and _("Hardcover API key invalid. Please validate it, or sign in using OAuth from the Hardcover menu.")
+          or _("Your Hardcover sign-in has expired. Please sign in again."))
+      -- from now on the plugin behaves as with no connection: updates are saved in the queue
+      self.state.read_cache_started = false
+      UIManager:nextTick(function()
+        self:startReadCache()
+      end)
+    end
+  end
+
+  Api.on_signin_lost = function()
+    if not self.settings:suppressNotifications() then
       UIManager:show(InfoMessage:new {
-        text = "Your Hardcover API key is not valid or has expired. Please update it and restart",
-        icon = "notice-warning",
+        text = _("Hardcover sign-in expired. Using your API key instead. Sign in again from the Hardcover menu."),
+        timeout = 8,
       })
     end
   end
@@ -166,6 +183,9 @@ function HardcoverApp:init()
 
   self.menu = HardcoverMenu:new {
     enabled = true,
+    auth_changed = function()
+      self:onAuthChanged()
+    end,
 
     cache = self.cache,
     dialog_manager = self.dialog_manager,
@@ -190,6 +210,73 @@ function HardcoverApp:init()
   end
 
   self:startLinkWatch()
+
+  logger.info("HARDCOVER connection: signed in=" .. tostring(Oauth.isSignedIn())
+    .. ", key file present=" .. tostring(Api:hasKeyFile())
+    .. ", usable credentials=" .. tostring(Api:hasCredentials()))
+
+  -- Neither signed in nor an API key: the plugin stays quiet (no requests, nothing queued) and
+  -- says so once each time KOReader starts
+  if not Api:hasCredentials() then
+    self:disable()
+    if not HardcoverApp._not_signed_in_shown then
+      HardcoverApp._not_signed_in_shown = true
+      UIManager:scheduleIn(3, function()
+        self:remindNotSignedIn()
+      end)
+    end
+  end
+end
+
+-- Shown at start-up and every time the device wakes while there is no sign-in or API key. It is
+-- deliberately not hidden by "Suppress all pop-up notifications": without credentials the plugin
+-- cannot do anything.
+-- A box with "Sign in" and "Cancel", for when the plugin cannot connect. It is deliberately not
+-- hidden by "Suppress all pop-up notifications": without a connection the plugin cannot do anything.
+function HardcoverApp:showSignInPrompt(text)
+  UIManager:show(ConfirmBox:new {
+    text = text,
+    face = Font:getFace("x_smallinfofont"),
+    icon = "notice-info",
+    ok_text = _("Sign in"),
+    cancel_text = _("Cancel"),
+    ok_callback = function()
+      SignInDialog.start(function()
+        self:onAuthChanged()
+      end)
+    end,
+  })
+end
+
+-- What to tell the user when there is nothing to connect with: if hardcover_config.lua exists the
+-- API key is what they meant to use, so the key is reported; otherwise they are offered a sign-in
+local function noConnectionText()
+  if Api:hasKeyFile() then
+    return _("Hardcover API key invalid. Please validate it, or sign in using OAuth from the Hardcover menu.")
+  end
+  return _("Not signed in to Hardcover. Sign in from the Hardcover plugin menu or configure your API key.")
+end
+
+function HardcoverApp:remindNotSignedIn()
+  if Api:hasCredentials() then
+    return
+  end
+  -- the file browser's and the reader's copies of the plugin both hear about a wake-up
+  local now = os.time()
+  if HardcoverApp._reminded_at and now - HardcoverApp._reminded_at < 15 then
+    return
+  end
+  HardcoverApp._reminded_at = now
+
+  self:showSignInPrompt(noConnectionText())
+end
+
+function HardcoverApp:onResume()
+  if not Api:hasCredentials() then
+    UIManager:scheduleIn(3, function()
+      self:remindNotSignedIn()
+    end)
+  end
 end
 
 -- A queued update that was waiting for its book to be linked is sent as soon as the link
@@ -351,6 +438,36 @@ function HardcoverApp:onHardcoverNote(note_params)
     note_params.remote_page,
     note_params.note_type or "quote"
   )
+end
+
+-- Called after signing in or out: the plugin works again (or stops) with whatever sign-in is left
+function HardcoverApp:onAuthChanged()
+  -- it may be a different account now, so the stored user id is forgotten
+  self.settings.settings:delSetting(SETTING.USER_ID)
+  self.settings.settings:flush()
+
+  local usable = Api:hasCredentials()
+  self.enabled = usable
+  if self.menu then
+    self.menu.enabled = usable
+  end
+  self:registerHighlight()
+
+  -- signed out with an API key that does not work: say so now, not only at the next wake-up
+  if not usable and Api:hasKeyFile() then
+    UIManager:scheduleIn(1, function()
+      self:showSignInPrompt(noConnectionText())
+    end)
+  end
+
+  if usable and self.ui.document and
+      (self.settings:syncEnabled() or (not self.settings:bookLinked() and self.settings:autolinkEnabled())) then
+    self.state.read_cache_started = false
+    self.state.status_unavailable = false
+    self.state.offline_announced = false
+    UIManager:scheduleIn(1, self.startReadCache, self)
+  end
+  self:scheduleQueueSync(4)
 end
 
 function HardcoverApp:disable()
@@ -552,7 +669,7 @@ end
 
 -- Runs send() when wifi is on; otherwise queue() runs instead, so nothing is lost.
 function HardcoverApp:sendOrQueue(send, queue)
-  if NetworkManager:isWifiOn() then
+  if NetworkManager:isWifiOn() and Api:hasCredentials() then
     send()
   else
     queue()
@@ -630,7 +747,11 @@ function HardcoverApp:notify(text, timeout)
 end
 
 function HardcoverApp:notifyQueued()
-  self:notify(_("Saved. Will be sent to Hardcover when online"))
+  if Api:hasCredentials() then
+    self:notify(_("Saved. Will be sent to Hardcover when online"))
+  else
+    self:notify(_("Saved. Will be sent once connected to Hardcover"))
+  end
 end
 
 function HardcoverApp:queueStarted(file)
@@ -730,7 +851,11 @@ function HardcoverApp:announceOffline()
   sending_announced = false
 
   local text = _("Hardcover not reachable. Progress will be saved and sent later")
-  if not self.settings:bookLinked() and NetworkManager:isConnected() then
+  if not Api:hasCredentials() then
+    text = Api:hasKeyFile() and _("API key invalid. Updates will be saved and sent later")
+        or _("Not signed in. Updates will be saved and sent later")
+  end
+  if Api:hasCredentials() and not self.settings:bookLinked() and NetworkManager:isConnected() then
     text = _("This book is not linked to Hardcover. Progress will be saved and sent once it is linked")
   end
   self:notify(text)
@@ -748,7 +873,7 @@ function HardcoverApp:flushOfflineProgress()
 end
 
 function HardcoverApp:scheduleQueueSync(delay)
-  if self.queue:count() == 0 or self.queue.running then
+  if self.queue:count() == 0 or self.queue.running or not Api:hasCredentials() then
     return
   end
 
@@ -825,6 +950,15 @@ end
 -- reports back); otherwise only runs if a connection is already there and stays quiet unless
 -- something was sent.
 function HardcoverApp:syncQueueNow(manual)
+  if not Api:hasCredentials() then
+    if manual then
+      UIManager:show(InfoMessage:new {
+        text = _("Sign in to Hardcover, or configure your API key, to send the queued updates."),
+      })
+    end
+    return
+  end
+
   if self.queue:count() == 0 then
     if manual then
       UIManager:show(Notification:new { text = _("No queued updates") })
@@ -1540,6 +1674,22 @@ function HardcoverApp:startReadCache()
 
   if not self.ui.document then
     --logger.warn("HARDCOVER read cache fired outside of document")
+    return
+  end
+
+  -- Neither signed in nor an API key: treated like being offline. Progress, start and finish are
+  -- kept in the queue, and sent once the user has signed in.
+  if not Api:hasCredentials() then
+    if self.settings:syncEnabled() then
+      local first_time = not self.state.status_unavailable
+      self.state.status_unavailable = true
+      self:announceOffline()
+      if first_time then
+        UIManager:nextTick(function()
+          self:maybeStartReading()
+        end)
+      end
+    end
     return
   end
 
